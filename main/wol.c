@@ -141,7 +141,15 @@ static void mqtt_event_handler(void* arg, esp_event_base_t base, int32_t event_i
             
             if (!strncmp(event->data, "wake", 4)) {
                 ESP_LOGI(MQTT_TAG, "Sending WoL Packet");
-                send_wol_packet();
+                esp_err_t wol_status = send_wol_packet();
+
+                if (wol_status == ESP_OK) {
+                    // Publish success
+                    esp_mqtt_client_publish(client, "pc/wol_status", "WoL Packet sent successfully", 0, 2, 0);
+                } else {
+                    // Publish failure
+                    esp_mqtt_client_publish(client, "pc/wol_status", "WoL Packet failed to send", 0, 2, 0);
+                }
             }
             break;
         case MQTT_EVENT_ERROR:
