@@ -1,0 +1,19 @@
+menu "Wifi and MQTT Configuration"
+
+config WIFI_SSID
+    string "Wifi SSID"
+    default ""
+
+config WIFI_PASS
+    string "Wifi Password"
+    default ""
+
+config MAC_ADDR
+    string "PC MAC Address"
+    default ""
+
+config BROKER_URI
+    string "Broker URL"
+    default ""
+
+endmenu
