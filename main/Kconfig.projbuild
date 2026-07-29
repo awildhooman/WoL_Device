@@ -1,4 +1,4 @@
-menu "Wifi and MQTT Configuration"
+menu "WoL Device Config"
 
 config WIFI_SSID
     string "Wifi SSID"
@@ -14,6 +14,14 @@ config MAC_ADDR
 
 config BROKER_URI
     string "Broker URL"
+    default ""
+
+config MQTT_USER
+    string "MQTT Credentials Username"
+    default ""
+
+config MQTT_PASS
+    string "MQTT Credentials Password"
     default ""
 
 endmenu

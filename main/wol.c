@@ -219,11 +219,9 @@ void wifi_init_sta(void)
     /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(WIFI_TAG, "connected to ap SSID:%s",
-                 WIFI_SSID);
+        ESP_LOGI(WIFI_TAG, "connected to ap SSID:%s", WIFI_SSID);
     } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(WIFI_TAG, "Failed to connect to SSID:%s",
-                 WIFI_SSID);
+        ESP_LOGI(WIFI_TAG, "Failed to connect to SSID:%s", WIFI_SSID);
     } else {
         ESP_LOGE(WIFI_TAG, "UNEXPECTED EVENT");
     }
@@ -237,9 +235,9 @@ static void mqtt_app_start(void)
             .verification.crt_bundle_attach = esp_crt_bundle_attach
         },
         .credentials = {
-            .username = "Test",
+            .username = CONFIG_MQTT_USER,
             .authentication = {
-                .password = "Test12345"
+                .password = CONFIG_MQTT_PASS
             }
         }
     };
