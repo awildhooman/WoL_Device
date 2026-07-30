@@ -41,7 +41,28 @@ static int s_retry_num = 0;
 /* FreeRTOS event group to signal when we are connected*/
 static EventGroupHandle_t s_wifi_event_group;
 
-#define USE_PROPERTY_ARR_SIZE   sizeof(user_property_arr)/sizeof(esp_mqtt_user_property_item_t)
+static TaskHandle_t wifi_reconnect_handle = NULL;
+
+void wifi_reconnect_task(void *arg) {
+    TickType_t retry_delay = 10000 / portTICK_PERIOD_MS;
+    TickType_t max_delay = 1200*1000 / portTICK_PERIOD_MS; // 20 min
+
+    while (1) {
+        esp_wifi_connect();
+        ESP_LOGI(WIFI_TAG, "Attempt to reconnect to AP");
+        
+        // Blocks for retry_delay ms
+        if (ulTaskNotifyTakeIndexed(0, pdTRUE, retry_delay)) {
+            break;
+        }
+        retry_delay *= 1.5;
+        if (retry_delay > max_delay) {
+            retry_delay = max_delay;
+        }
+    }
+    wifi_reconnect_handle = NULL;
+    vTaskDelete(NULL);
+}
 
 esp_err_t send_wol_packet(void)
 {
@@ -93,19 +114,17 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < ESP_MAXIMUM_RETRY) {
-            esp_wifi_connect();
-            s_retry_num++;
-            ESP_LOGI(WIFI_TAG, "retry to connect to the AP");
-        } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        if (wifi_reconnect_handle == NULL) {
+            xTaskCreate(wifi_reconnect_task, "Reconnect WiFi", 4096, (void *) 1, 5, &wifi_reconnect_handle);
         }
-        ESP_LOGI(WIFI_TAG,"connect to the AP fail"); 
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(WIFI_TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        if (wifi_reconnect_handle != NULL) {
+            xTaskNotifyGiveIndexed(wifi_reconnect_handle, 0);
+        }
     }
 }
 
@@ -255,9 +274,9 @@ void app_main(void)
       ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-
-    ESP_ERROR_CHECK(esp_netif_init());
     
+    // Wifi Reconnect Task
+
     ESP_LOGI(WIFI_TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
     mqtt_app_start();
