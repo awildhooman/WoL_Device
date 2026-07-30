@@ -18,18 +18,10 @@
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
 
-#define WIFI_SSID CONFIG_WIFI_SSID
-#define WIFI_PASS CONFIG_WIFI_PASS
-#define ESP_MAXIMUM_RETRY  10
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_BOTH
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
-#define MAC_ADDR CONFIG_MAC_ADDR
 
-/* The event group allows multiple bits for each event, but we only care about two events:
- * - we are connected to the AP with an IP
- * - we failed to connect after the maximum amount of retries */
 #define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
 
 #define BROKER_URI CONFIG_BROKER_URI
 
@@ -43,7 +35,8 @@ static EventGroupHandle_t s_wifi_event_group;
 
 static TaskHandle_t wifi_reconnect_handle = NULL;
 
-void wifi_reconnect_task(void *arg) {
+void wifi_reconnect_task(void *arg)
+{
     TickType_t retry_delay = 10000 / portTICK_PERIOD_MS;
     TickType_t max_delay = 1200*1000 / portTICK_PERIOD_MS; // 20 min
 
@@ -78,6 +71,7 @@ esp_err_t send_wol_packet(void)
     int sock = socket(addr_family, SOCK_DGRAM, ip_protocol);
     if (sock < 0) {
         ESP_LOGE(WIFI_TAG, "Unable to create socket: errno %d", errno);
+        return ESP_FAIL;
     }
 
     struct timeval timeout;
@@ -90,7 +84,7 @@ esp_err_t send_wol_packet(void)
     uint8_t mac_addr[6];
 
     for (int i=0; i<6; i++) {
-        char hex[] = {MAC_ADDR[i*3], MAC_ADDR[i*3+1], '\0'};
+        char hex[] = {CONFIG_MAC_ADDR[i*3], CONFIG_MAC_ADDR[i*3+1], '\0'};
         mac_addr[i] = (uint8_t) strtoul(hex, NULL, 16);
     }
     memset(packet, 0xFF, 6);
@@ -102,6 +96,8 @@ esp_err_t send_wol_packet(void)
     int err = sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     if (err < 0) {
         ESP_LOGE(WIFI_TAG, "Error occured when sending magic packet. errno: %d", errno);
+        close(sock);
+        return ESP_FAIL;
     }
     ESP_LOGI(WIFI_TAG, "WoL packet sent successfully.");
     close(sock);
@@ -155,8 +151,7 @@ static void mqtt_event_handler(void* arg, esp_event_base_t base, int32_t event_i
             break;
         case MQTT_EVENT_DATA:
             ESP_LOGI(MQTT_TAG, "MQTT_EVENT_DATA");
-            ESP_LOGI(MQTT_TAG, "TOPIC=%.*s", event->topic_len, event->topic);
-            ESP_LOGI(MQTT_TAG, "DATA=%.*s", event->data_len, event->data);
+            ESP_LOGI(MQTT_TAG, "TOPIC=%.*s, DATA=%.*s", event->topic_len, event->topic, event->data_len, event->data);
             
             if (!strncmp(event->data, "wake", 4)) {
                 ESP_LOGI(MQTT_TAG, "Sending WoL Packet");
@@ -212,8 +207,8 @@ void wifi_init_sta(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
+            .ssid = CONFIG_WIFI_SSID,
+            .password = CONFIG_WIFI_PASS,
             .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
             .sae_pwe_h2e = ESP_WIFI_SAE_MODE,
             #ifdef CONFIG_ESP_WIFI_WPA3_COMPATIBLE_SUPPORT
@@ -227,10 +222,9 @@ void wifi_init_sta(void)
 
     ESP_LOGI(WIFI_TAG, "wifi_init_sta finished.");
 
-    /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or connection failed for the maximum
-     * number of re-tries (WIFI_FAIL_BIT). The bits are set by event_handler() (see above) */
+    // Waiting unti the connection is established (WIFI_CONNECTED_BIT). The bits are set by wifi_event_handler()
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+            WIFI_CONNECTED_BIT,
             pdFALSE,
             pdFALSE,
             portMAX_DELAY);
@@ -238,9 +232,7 @@ void wifi_init_sta(void)
     /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(WIFI_TAG, "connected to ap SSID:%s", WIFI_SSID);
-    } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(WIFI_TAG, "Failed to connect to SSID:%s", WIFI_SSID);
+        ESP_LOGI(WIFI_TAG, "connected to ap SSID:%s", CONFIG_WIFI_SSID);
     } else {
         ESP_LOGE(WIFI_TAG, "UNEXPECTED EVENT");
     }
