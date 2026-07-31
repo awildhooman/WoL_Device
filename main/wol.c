@@ -34,11 +34,12 @@ static int s_retry_num = 0;
 static EventGroupHandle_t s_wifi_event_group;
 
 static TaskHandle_t wifi_reconnect_handle = NULL;
+static TaskHandle_t send_wol_handle = NULL;
 
 void wifi_reconnect_task(void *arg)
 {
-    TickType_t retry_delay = 10000 / portTICK_PERIOD_MS;
-    TickType_t max_delay = 1200*1000 / portTICK_PERIOD_MS; // 20 min
+    TickType_t retry_delay = pdMS_TO_TICKS(10000);
+    TickType_t max_delay = pdMS_TO_TICKS(1200*1000); // 20 min
 
     while (1) {
         esp_wifi_connect();
@@ -57,27 +58,33 @@ void wifi_reconnect_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t send_wol_packet(void)
+void send_wol_task(void *arg)
 {
     // Set up socket
     int addr_family = AF_INET;
     int ip_protocol = IPPROTO_UDP;
 
-    struct sockaddr_in dest_addr;
-    dest_addr.sin_addr.s_addr = INADDR_ANY;
-    dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = 0;
+    struct sockaddr_in broadcast_addr;
+    broadcast_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    broadcast_addr.sin_family = AF_INET;
+    broadcast_addr.sin_port = htons(9);
 
     int sock = socket(addr_family, SOCK_DGRAM, ip_protocol);
     if (sock < 0) {
         ESP_LOGE(WIFI_TAG, "Unable to create socket: errno %d", errno);
-        return ESP_FAIL;
+        send_wol_handle = NULL;
+        vTaskDelete(NULL);
+        return;
     }
 
-    struct timeval timeout;
-    timeout.tv_sec = 10;
-    timeout.tv_usec = 0;
-    setsockopt (sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    int broadcast_enable = 1;
+    if ( setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
+        ESP_LOGE(WIFI_TAG, "setsockopt fail");
+        close(sock);
+        send_wol_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     // Magic Packet
     uint8_t packet[102];
@@ -93,16 +100,23 @@ esp_err_t send_wol_packet(void)
     }
 
     // Broadcast Packet
-    int err = sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-    if (err < 0) {
-        ESP_LOGE(WIFI_TAG, "Error occured when sending magic packet. errno: %d", errno);
-        close(sock);
-        return ESP_FAIL;
+    const TickType_t period = pdMS_TO_TICKS(50);
+    int success = 1;
+    for (int i = 0; i < 5; i++) {
+        if ( sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr)) < 0) {
+            success = 0;
+        }
+        vTaskDelay(period);
     }
-    ESP_LOGI(WIFI_TAG, "WoL packet sent successfully.");
-    close(sock);
+    if (!success) {
+        esp_mqtt_client_publish((esp_mqtt_client_handle_t) arg, "pc/wol_status", "One or more WoL packets failed to send.", 0, 2, 0);
+    } else {
+        esp_mqtt_client_publish((esp_mqtt_client_handle_t) arg, "pc/wol_status", "WoL Packet burst sent successfully", 0, 2, 0);
+    }
 
-    return ESP_OK;
+    close(sock);
+    send_wol_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
@@ -155,14 +169,8 @@ static void mqtt_event_handler(void* arg, esp_event_base_t base, int32_t event_i
             
             if (!strncmp(event->data, "wake", 4)) {
                 ESP_LOGI(MQTT_TAG, "Sending WoL Packet");
-                esp_err_t wol_status = send_wol_packet();
-
-                if (wol_status == ESP_OK) {
-                    // Publish success
-                    esp_mqtt_client_publish(client, "pc/wol_status", "WoL Packet sent successfully", 0, 2, 0);
-                } else {
-                    // Publish failure
-                    esp_mqtt_client_publish(client, "pc/wol_status", "WoL Packet failed to send", 0, 2, 0);
+                if (send_wol_handle == NULL) {
+                    xTaskCreate(send_wol_task, "Send WoL Packet", 4096, (void *) client, 5, &send_wol_handle);
                 }
             }
             break;
@@ -247,9 +255,7 @@ static void mqtt_app_start(void)
         },
         .credentials = {
             .username = CONFIG_MQTT_USER,
-            .authentication = {
-                .password = CONFIG_MQTT_PASS
-            }
+            .authentication.password = CONFIG_MQTT_PASS
         }
     };
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
