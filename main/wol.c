@@ -3,12 +3,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "driver/gpio.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "sdkconfig.h"
 
 #include "lwip/err.h"
 #include "lwip/sys.h"
@@ -23,7 +23,8 @@
 
 #define WIFI_CONNECTED_BIT BIT0
 
-#define BROKER_URI CONFIG_BROKER_URI
+#define GPIO_OUTPUT_IO CONFIG_GPIO_OUTPUT_IO
+#define GPIO_OUTPUT_PIN_SEL (1ULL<<GPIO_OUTPUT_IO)
 
 static const char *WIFI_TAG = "Wifi Station";
 static const char *MQTT_TAG = "MQTT Client";
@@ -35,6 +36,16 @@ static EventGroupHandle_t s_wifi_event_group;
 
 static TaskHandle_t wifi_reconnect_handle = NULL;
 static TaskHandle_t send_wol_handle = NULL;
+static TaskHandle_t reset_handle = NULL;
+
+void reset_task(void *arg) {
+    const TickType_t period = pdMS_TO_TICKS(500);
+    ESP_ERROR_CHECK(gpio_set_level(GPIO_OUTPUT_IO, 1));
+    vTaskDelay(period);
+    ESP_ERROR_CHECK(gpio_set_level(GPIO_OUTPUT_IO, 0));
+    reset_handle = NULL;
+    vTaskDelete(NULL);
+}
 
 void wifi_reconnect_task(void *arg)
 {
@@ -172,6 +183,11 @@ static void mqtt_event_handler(void* arg, esp_event_base_t base, int32_t event_i
                 if (send_wol_handle == NULL) {
                     xTaskCreate(send_wol_task, "Send WoL Packet", 4096, (void *) client, 5, &send_wol_handle);
                 }
+            } else if (!strncmp(event->data, "reset", 5)) {
+                ESP_LOGI(MQTT_TAG, "Hardware resetting PC");
+                if (reset_handle == NULL) {
+                    xTaskCreate(reset_task, "Hardware Reset", 1024, (void *) client, 5, &reset_handle);
+                }
             }
             break;
         case MQTT_EVENT_ERROR:
@@ -250,7 +266,7 @@ static void mqtt_app_start(void)
 {
     const esp_mqtt_client_config_t mqtt_cfg = {
         .broker = {
-            .address.uri = BROKER_URI,
+            .address.uri = CONFIG_BROKER_URI,
             .verification.crt_bundle_attach = esp_crt_bundle_attach
         },
         .credentials = {
@@ -274,6 +290,17 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(WIFI_TAG, "ESP_WIFI_MODE_STA");
+
+    // GPIO Config
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLDOWN_DISABLE,
+        .pin_bit_mask = (1ULL << GPIO_OUTPUT_IO)
+    };
+    gpio_config(&io_conf);
+
     wifi_init_sta();
     mqtt_app_start();
 }
